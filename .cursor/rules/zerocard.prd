@@ -1,0 +1,570 @@
+# **Zerocard Technical Product Requirements Document (PRD)**
+
+## **1. Introduction**
+
+### **1.1 Purpose**
+This PRD outlines the functional requirements for Zerocard, a crypto card service that allows users to load their cryptocurrency wallets and spend crypto like cash using a physical debit card. The system leverages partnerships with fiat account providers, off-ramp gateways, and blockchain integrations to enable seamless crypto-to-fiat conversion and spending. The goal is to provide a user-friendly platform for managing crypto wallets, ordering cards, and facilitating transactions with support for master and sub cards sharing the same funding source.
+
+### **1.2 Scope**
+Zerocard includes:
+- User management with wallet address integration via Privy for onboarding.
+- Support for multiple blockchains and wallet addresses per user.
+- Card ordering, activation, and management (master and sub cards).
+- Crypto-to-fiat conversion (off-ramping) for spending.
+- Transaction tracking and notifications for deposits, spending, and low balances.
+- Integration with external APIs:
+  - Sudo Africa for card issuance and fiat accounts.
+  - Safe Haven MFB for identity verification.
+  - Paycrest for off-ramp gateway orders.
+  - Privy for wallet delegation checks.
+
+This PRD focuses solely on functional requirements, excluding technical stack details.
+
+### **1.3 Assumptions**
+- Users are onboarded via Privy, which provides wallet addresses and blockchain details.
+- External APIs (Sudo Africa, Safe Haven MFB, Paycrest, Privy) are reliable and available.
+- Users have access to supported blockchains (e.g., Ethereum, Polygon).
+- A company wallet address exists for collecting card-ordering fees.
+- SMS/email services are available for notifications.
+
+---
+
+## **2. Functional Requirements**
+
+### **2.1 User Management**
+Users are created upon first login via Privy and can update their details for card ordering and verification.
+
+#### **2.1.1 Create User**
+- **Description**: Initializes a new user when they log in via Privy.
+- **Inputs**:
+  - Wallet address (string, e.g., Ethereum address).
+  - Blockchain (string, e.g., "Ethereum", "Polygon").
+- **Functionality**:
+  - Validate wallet address format (e.g., 42 characters for Ethereum).
+  - Ensure blockchain is supported.
+  - Check for duplicate wallet address on the same blockchain.
+  - Assign a unique `user_id` (UUID).
+  - Set `verification_status` to "pending".
+  - Store wallet address and blockchain in the database.
+- **Outputs**: `{ "user_id": "uuid", "message": "User created" }`.
+- **Conditions**:
+  - Wallet address must be unique per blockchain.
+  - Blockchain must be in the supported list.
+- **Edge Cases**:
+  - Invalid wallet address format → Return `{ "error": "Invalid wallet address format" }` (400).
+  - Unsupported blockchain → Return `{ "error": "Unsupported blockchain" }` (400).
+  - Duplicate wallet address → Return `{ "error": "Wallet address already registered" }` (409).
+
+#### **2.1.2 Update User Information**
+- **Description**: Allows users to submit personal details for card ordering.
+- **Inputs**:
+  - `user_id` (UUID).
+  - First name (string).
+  - Last name (string).
+  - Date of birth (ISO date string).
+  - Phone number (international format, e.g., +234...).
+  - Shipping address (object: street, city, state, country, postal code).
+  - Identification (object: type ["NIN" or "BVN"], number [string]).
+- **Functionality**:
+  - Validate `user_id` exists.
+  - Ensure only one identification type is provided (NIN or BVN, not both).
+  - Validate identification number format (e.g., 11 digits for NIN, 10 for BVN).
+  - Check phone number uniqueness across users.
+  - Ensure shipping address has all required fields.
+  - Update user record in the database.
+- **Outputs**: `{ "message": "User information updated" }`.
+- **Conditions**:
+  - User must exist.
+  - Identification must be valid and unique.
+  - Phone number must not be in use by another user.
+- **Edge Cases**:
+  - Non-existent user → Return `{ "error": "User not found" }` (404).
+  - Invalid identification type/number → Return `{ "error": "Invalid identification" }` (400).
+  - Duplicate phone number → Return `{ "error": "Phone number already in use" }` (409).
+  - Missing address fields → Return `{ "error": "Incomplete shipping address" }` (400).
+
+#### **2.1.3 Verify User**
+- **Description**: Verifies user identity using OTP and initiates card ordering if balance permits.
+- **Inputs**:
+  - `user_id` (UUID).
+  - OTP (6-digit string).
+- **Functionality**:
+  - Validate `user_id` exists and `verification_status` is "pending".
+  - Verify identity via Safe Haven MFB API (`POST /verify-identity`) using stored `identification.number`.
+  - Validate OTP via Sudo Africa API.
+  - Check wallet balance (summed across all user wallets) for ≥ $5.
+  - If balance ≥ $5:
+    - Set `verification_status` to "verified".
+    - Deduct $5 and transfer to company wallet address.
+    - Call card ordering function (Sudo Africa `POST /create-card`).
+    - Set `card_order_status` to "ordered".
+  - If balance < $5:
+    - Set `verification_status` to "verified".
+    - Set `card_order_status` to "verified".
+- **Outputs**:
+  - Balance ≥ $5: `{ "message": "Verification successful, card ordered" }`.
+  - Balance < $5: `{ "message": "Verification successful, insufficient balance to order card" }`.
+- **Conditions**:
+  - User must not be verified already.
+  - OTP must match Sudo Africa’s response.
+  - Safe Haven API must confirm identity.
+- **Edge Cases**:
+  - Already verified user → Return `{ "error": "User already verified" }` (400).
+  - Invalid OTP → Return `{ "error": "Invalid OTP" }` (400).
+  - Identity verification failure → Return `{ "error": "Identity verification failed" }` (403).
+  - API downtime → Return `{ "error": "Verification service unavailable" }` (503).
+  - Balance fetch failure → Return `{ "error": "Unable to check balance" }` (500).
+
+#### **2.1.4 Get User**
+- **Description**: Retrieves all user details.
+- **Inputs**: `user_id` (UUID).
+- **Functionality**:
+  - Fetch user record, including:
+    - Wallet addresses and blockchains.
+    - Personal details (first name, last name, etc.).
+    - `verification_status`.
+    - `card_order_status` ("not_ordered", "verified", "ordered", "shipped", "delivered").
+    - `customer_id` (from Sudo Africa).
+    - `account_number` (fiat account).
+    - `card_active` (boolean).
+    - Crypto balance in USD (sum of all wallets).
+    - Fiat balance in USD (from Sudo Africa).
+    - Total balance in USD (crypto + fiat).
+- **Outputs**:
+  - Object containing all user details.
+- **Conditions**: User must exist.
+- **Edge Cases**:
+  - Non-existent user → Return `{ "error": "User not found" }` (404).
+  - Balance fetch failure → Return partial data with `{ "warning": "Balance data unavailable" }`.
+
+---
+
+### **2.2 Wallet Management**
+Manages wallet addresses and balances, supporting multiple blockchains.
+
+#### **2.2.1 Get Wallet Balance**
+- **Description**: Retrieves the balance of a specific wallet address.
+- **Inputs**: `wallet_address` (string).
+- **Functionality**:
+  - Validate `wallet_address` exists in the database.
+  - Fetch balance from blockchain (or Privy API if cached data is stale).
+  - Convert token balances to USD using real-time rates.
+  - Return token details and total USD value.
+- **Outputs**: `{ "balance_usd": number, "tokens": [{ "token": string, "amount": number }] }`.
+- **Conditions**: Wallet must be registered.
+- **Edge Cases**:
+  - Non-existent wallet → Return `{ "error": "Wallet not found" }` (404).
+  - Blockchain API failure → Return `{ "error": "Balance fetch failed" }` (503).
+  - Rate conversion failure → Return `{ "error": "Currency conversion unavailable" }` (503).
+
+#### **2.2.2 Get User Wallets**
+- **Description**: Lists all wallets associated with a user.
+- **Inputs**: `user_id` (UUID).
+- **Functionality**:
+  - Validate `user_id` exists.
+  - Fetch all wallet addresses and their blockchains.
+  - Include balance for each wallet (USD).
+- **Outputs**: `{ "wallets": [{ "blockchain": string, "address": string, "balance_usd": number }] }`.
+- **Conditions**: User must exist.
+- **Edge Cases**:
+  - Non-existent user → Return `{ "error": "User not found" }` (404).
+  - Balance fetch failure → Return wallets with `{ "warning": "Some balances unavailable" }`.
+
+#### **2.2.3 Process Deposit Webhook**
+- **Description**: Handles deposit notifications from blockchain webhooks.
+- **Inputs**:
+  - `wallet_address` (string).
+  - `amount` (number).
+  - `token` (string).
+  - `blockchain` (string).
+- **Functionality**:
+  - Validate `wallet_address` exists.
+  - Ensure `amount` > 0 and `token`/`blockchain` are valid.
+  - Find associated `user_id`.
+  - Record transaction (type: "deposit").
+  - Update wallet balance cache.
+  - Send deposit notification (SMS/email).
+- **Outputs**: `{ "message": "Deposit recorded" }`.
+- **Conditions**:
+  - Wallet must be registered.
+  - Webhook payload must be complete.
+- **Edge Cases**:
+  - Non-existent wallet → Return `{ "error": "Wallet not found" }` (404).
+  - Invalid payload → Return `{ "error": "Invalid webhook payload" }` (400).
+  - Duplicate transaction (same ID) → Return `{ "message": "Duplicate deposit ignored" }` (200).
+  - Notification failure → Log error, still return success.
+
+---
+
+### **2.3 Transaction Management**
+Tracks all financial activities.
+
+#### **2.3.1 Create Transaction**
+- **Description**: Records a transaction (deposit, card fee, off-ramp).
+- **Inputs**:
+  - `user_id` (UUID).
+  - `wallet_address` (string).
+  - `amount` (number).
+  - `token` (string).
+  - `blockchain` (string).
+  - `type` ("deposit", "card_fee", "off_ramp").
+  - `metadata` (optional object, e.g., `{ "purpose": "card_ordering" }`).
+- **Functionality**:
+  - Validate `user_id` and `wallet_address` exist.
+  - Ensure `amount` > 0 and `type` is valid.
+  - Store transaction with timestamp.
+- **Outputs**: `{ "transaction_id": "uuid", "message": "Transaction recorded" }`.
+- **Conditions**:
+  - User and wallet must exist.
+  - Transaction type must be supported.
+- **Edge Cases**:
+  - Non-existent user/wallet → Return `{ "error": "User or wallet not found" }` (404).
+  - Invalid amount → Return `{ "error": "Invalid amount" }` (400).
+  - Invalid type → Return `{ "error": "Unsupported transaction type" }` (400).
+
+#### **2.3.2 Get User Transactions**
+- **Description**: Retrieves a user’s transaction history.
+- **Inputs**: `user_id` (UUID).
+- **Functionality**:
+  - Validate `user_id` exists.
+  - Fetch transactions (paginated, sorted by timestamp).
+- **Outputs**: `{ "transactions": [{ "transaction_id": string, "amount": number, ... }] }`.
+- **Conditions**: User must exist.
+- **Edge Cases**:
+  - Non-existent user → Return `{ "error": "User not found" }` (404).
+  - No transactions → Return `{ "transactions": [] }`.
+
+---
+
+### **2.4 Card Management**
+Handles card ordering, activation, and sub card functionality.
+
+#### **2.4.1 Order Card**
+- **Description**: Orders a master or sub card.
+- **Inputs**:
+  - `user_id` (UUID).
+  - `card_type` ("master" or "sub").
+  - `master_card_id` (string, required for sub cards).
+  - `shipping_address` (optional object, overrides user default).
+- **Functionality**:
+  - Validate `user_id` exists and `verification_status` is "verified".
+  - For master card:
+    - Check wallet balance ≥ $5.
+    - Deduct $5 and transfer to company wallet.
+  - For sub card:
+    - Validate `master_card_id` exists and belongs to `user_id`.
+    - Ensure sub card count < 3 per master card.
+  - Call Sudo Africa API (`POST /create-card`) with `customer_id`.
+  - Store `card_id` and set `card_order_status` to "ordered".
+- **Outputs**: `{ "card_id": "string", "message": "Card ordered" }`.
+- **Conditions**:
+  - User must be verified.
+  - Sufficient balance for master card.
+  - Valid master card for sub card.
+- **Edge Cases**:
+  - Unverified user → Return `{ "error": "User not verified" }` (403).
+  - Insufficient balance → Return `{ "error": "Insufficient balance" }` (400).
+  - Invalid master card → Return `{ "error": "Invalid master card" }` (404).
+  - Sub card limit reached → Return `{ "error": "Sub card limit reached" }` (400).
+  - API failure → Return `{ "error": "Card service unavailable" }` (503).
+
+#### **2.4.2 Complete Card Creation**
+- **Description**: Finishes card ordering for users who were verified but lacked balance.
+- **Inputs**: `user_id` (UUID).
+- **Functionality**:
+  - Validate `user_id` exists and `verification_status` is "verified".
+  - Check `card_order_status` is "verified".
+  - Verify wallet balance ≥ $5.
+  - Deduct $5 and transfer to company wallet.
+  - Call Sudo Africa API (`POST /create-card`).
+  - Update `card_order_status` to "ordered".
+- **Outputs**: `{ "card_id": "string", "message": "Card creation completed" }`.
+- **Conditions**:
+  - User must be verified.
+  - Balance must be sufficient.
+- **Edge Cases**:
+  - Non-verified user → Return `{ "error": "User not verified" }` (403).
+  - Already ordered → Return `{ "error": "Card already ordered" }` (400).
+  - Insufficient balance → Return `{ "error": "Insufficient balance" }` (400).
+
+#### **2.4.3 Activate Card**
+- **Description**: Activates a delivered card and sends a PIN.
+- **Inputs**:
+  - `card_id` (string).
+  - `delivery_confirmed` (boolean).
+  - `pin_delivery_method` ("sms" or "email").
+- **Functionality**:
+  - Validate `card_id` exists and `status` is "delivered".
+  - Ensure `delivery_confirmed` is true.
+  - Generate a default PIN.
+  - Send PIN via specified method (SMS default).
+  - Update card `status` to "active".
+- **Outputs**: `{ "message": "Card activated, PIN sent" }`.
+- **Conditions**:
+  - Card must be delivered.
+  - Delivery must be confirmed.
+- **Edge Cases**:
+  - Non-existent card → Return `{ "error": "Card not found" }` (404).
+  - Not delivered → Return `{ "error": "Card not yet delivered" }` (400).
+  - Notification failure → Return `{ "error": "PIN delivery failed" }` (500).
+
+#### **2.4.4 Set/Change PIN**
+- **Description**: Updates the card PIN.
+- **Inputs**:
+  - `card_id` (string).
+  - `old_pin` (string, required for changes).
+  - `new_pin` (string).
+- **Functionality**:
+  - Validate `card_id` exists and `status` is "active".
+  - If changing PIN, verify `old_pin` matches.
+  - Ensure `new_pin` is 4 digits.
+  - Update PIN in database (encrypted).
+- **Outputs**: `{ "message": "PIN updated" }`.
+- **Conditions**:
+  - Card must be active.
+  - Old PIN must match for changes.
+- **Edge Cases**:
+  - Non-existent card → Return `{ "error": "Card not found" }` (404).
+  - Inactive card → Return `{ "error": "Card not active" }` (400).
+  - Invalid old PIN → Return `{ "error": "Incorrect old PIN" }` (403).
+  - Invalid new PIN → Return `{ "error": "Invalid PIN format" }` (400).
+
+#### **2.4.5 Freeze Card**
+- **Description**: Temporarily disables a card.
+- **Inputs**: `card_id` (string).
+- **Functionality**:
+  - Validate `card_id` exists and `status` is "active".
+  - Update `status` to "frozen".
+- **Outputs**: `{ "message": "Card frozen" }`.
+- **Conditions**: Card must be active.
+- **Edge Cases**:
+  - Non-existent card → Return `{ "error": "Card not found" }` (404).
+  - Already frozen → Return `{ "error": "Card already frozen" }` (400).
+
+#### **2.4.6 Get Card Status**
+- **Description**: Tracks card delivery status.
+- **Inputs**: `card_id` (string).
+- **Functionality**:
+  - Validate `card_id` exists.
+  - Fetch status ("ordered", "shipped", "delivered").
+  - If "delivered", include delivery date and shipping info.
+- **Outputs**:
+  - `{ "status": string, "delivery": { "delivery_date": string, "shipping_info": object } }` (if delivered).
+  - `{ "status": string }` (otherwise).
+- **Conditions**: Card must exist.
+- **Edge Cases**:
+  - Non-existent card → Return `{ "error": "Card not found" }` (404).
+
+#### **2.4.7 Get Spending History**
+- **Description**: Retrieves card transaction history.
+- **Inputs**: `card_id` (string).
+- **Functionality**:
+  - Validate `card_id` exists.
+  - Fetch transactions from Sudo Africa API (authorized spends).
+- **Outputs**: `{ "transactions": [{ "amount": number, "currency": "USD", "timestamp": string, "merchant": string }] }`.
+- **Conditions**: Card must exist.
+- **Edge Cases**:
+  - Non-existent card → Return `{ "error": "Card not found" }` (404).
+  - API failure → Return `{ "error": "Transaction fetch failed" }` (503).
+
+#### **2.4.8 Get Card Balance**
+- **Description**: Retrieves fiat balance.
+- **Inputs**: `card_id` (string).
+- **Functionality**:
+  - Validate `card_id` exists.
+  - Fetch balance from Sudo Africa API.
+- **Outputs**: `{ "fiat_balance_usd": number }`.
+- **Conditions**: Card must exist.
+- **Edge Cases**:
+  - Non-existent card → Return `{ "error": "Card not found" }` (404).
+  - API failure → Return `{ "error": "Balance fetch failed" }` (503).
+
+---
+
+### **2.5 Off-Ramp Management**
+Converts crypto to fiat for spending.
+
+#### **2.5.1 Initiate Off-Ramp**
+- **Description**: Converts crypto to fiat and loads it into the fiat account.
+- **Inputs**:
+  - `user_id` (UUID).
+  - `wallet_address` (string).
+  - `amount_usd` (number).
+- **Functionality**:
+  - Validate `user_id` and `wallet_address` exist.
+  - Ensure `amount_usd` > 0 and ≤ wallet balance.
+  - Check wallet delegation via Privy API (`GET /users/{did}`), requiring `delegated: true`.
+  - Call Paycrest API (`POST /gateway-orders`) to convert crypto to fiat.
+  - Load fiat into user’s account via Sudo Africa API.
+  - Record transaction (type: "off_ramp").
+  - Send notification of successful off-ramp.
+- **Outputs**: `{ "status": "completed", "amount_usd": number, "amount_ngn": number }`.
+- **Conditions**:
+  - Wallet must have sufficient balance.
+  - Wallet must be delegated.
+  - Paycrest and Sudo APIs must succeed.
+- **Edge Cases**:
+  - Non-existent user/wallet → Return `{ "error": "User or wallet not found" }` (404).
+  - Insufficient balance → Return `{ "error": "Insufficient wallet balance" }` (400).
+  - No delegation → Return `{ "error": "No delegation" }` (403).
+  - API failure → Return `{ "error": "Off-ramp service unavailable" }` (503).
+
+#### **2.5.2 Get Off-Ramp Status**
+- **Description**: Checks the status of an off-ramp transaction.
+- **Inputs**: `transaction_id` (UUID).
+- **Functionality**:
+  - Validate `transaction_id` exists.
+  - Query Paycrest API for status.
+- **Outputs**: `{ "status": "pending" | "completed" | "failed" }`.
+- **Conditions**: Transaction must exist.
+- **Edge Cases**:
+  - Non-existent transaction → Return `{ "error": "Transaction not found" }` (404).
+  - API failure → Return `{ "error": "Status fetch failed" }` (503).
+
+---
+
+### **2.6 Notification Management**
+Sends alerts for spending and balance events.
+
+#### **2.6.1 Set Spending Notification**
+- **Description**: Sets a spending threshold for notifications.
+- **Inputs**:
+  - `user_id` (UUID).
+  - `amount_usd` (number).
+- **Functionality**:
+  - Validate `user_id` exists and `amount_usd` > 0.
+  - Store threshold for the user’s card.
+  - Initiate off-ramp for `amount_usd` to load fiat account.
+  - Monitor fiat balance; notify if < 20% of `amount_usd`.
+- **Outputs**: `{ "message": "Spending notification set" }`.
+- **Conditions**:
+  - User must have an active card.
+  - Off-ramp must succeed.
+- **Edge Cases**:
+  - Non-existent user → Return `{ "error": "User not found" }` (404).
+  - No active card → Return `{ "error": "No active card" }` (400).
+  - Off-ramp failure → Return `{ "error": "Failed to set spending limit" }` (500).
+
+#### **2.6.2 Low Balance Notification**
+- **Description**: Sends an alert when fiat balance is low.
+- **Inputs** (internal trigger):
+  - `user_id` (UUID).
+  - `fiat_balance_usd` (number).
+- **Functionality**:
+  - Triggered when `fiat_balance_usd` < 20% of last set `amount_usd`.
+  - Send notification via SMS/email.
+- **Outputs**: None (internal).
+- **Conditions**: User must have a set spending threshold.
+- **Edge Cases**:
+  - Notification failure → Log error, retry once.
+
+---
+
+### **2.7 Sub Card Management**
+Sub cards share the master card’s funding source with spending constraints.
+
+#### **2.7.1 Create Sub Card**
+- **Description**: Orders a sub card linked to a master card.
+- **Inputs**:
+  - `user_id` (UUID).
+  - `master_card_id` (string).
+  - `email` (string, for sub card user).
+  - `shipping_address` (optional, defaults to master card’s address).
+  - `spending_limit` (number).
+- **Functionality**:
+  - Validate `user_id` and `master_card_id` (must belong to user).
+  - Ensure sub card count < 3.
+  - Set `spending_limit` for sub card (cannot exceed master card’s limit).
+  - Call Sudo Africa API to create sub card.
+  - Send invitation email to `email` with activation instructions.
+- **Outputs**: `{ "card_id": "string", "message": "Sub card ordered" }`.
+- **Conditions**:
+  - Master card must be active.
+  - Sub card limit must be valid.
+- **Edge Cases**:
+  - Invalid master card → Return `{ "error": "Invalid master card" }` (404).
+  - Limit exceeded → Return `{ "error": "Sub card limit exceeds master" }` (400).
+  - Sub card limit reached → Return `{ "error": "Sub card limit reached" }` (400).
+  - Email failure → Log error, still return success.
+
+#### **2.7.2 Monitor Sub Card Spending**
+- **Description**: Allows master card user to view sub card usage.
+- **Inputs**: `master_card_id` (string).
+- **Functionality**:
+  - Validate `master_card_id` exists.
+  - Fetch all sub cards and their transactions.
+- **Outputs**: `{ "sub_cards": [{ "card_id": string, "spending_limit": number, "transactions": [...] }] }`.
+- **Conditions**: Master card must exist.
+- **Edge Cases**:
+  - Non-existent master card → Return `{ "error": "Master card not found" }` (404).
+
+---
+
+## **3. Non-Functional Requirements**
+
+### **3.1 Performance**
+- Balance queries return within 1 second, using cached data (invalidated every second).
+- API responses (excluding external API delays) within 500ms.
+- Webhook processing completes within 2 seconds.
+
+### **3.2 Reliability**
+- Handle external API failures gracefully with retries (max 3 attempts) but not for offramping .
+- Log all errors for debugging.
+- Ensure transaction integrity (no double-spending or duplicate records).
+
+### **3.3 Security**
+- Encrypt sensitive data (PINs, identification numbers).
+- Validate all inputs to prevent injection attacks.
+- Rate-limit APIs to prevent abuse (100 requests/minute/user).
+
+### **3.4 Compliance**
+- Adhere to KYC requirements via Safe Haven MFB verification.
+- Store identification data securely per regulatory standards.
+
+---
+
+## **4. User Flow Examples**
+
+### **4.1 New User Card Ordering**
+1. User logs in via Privy → System creates user with wallet address.
+2. User submits personal details (name, address, NIN).
+3. User receives OTP, verifies identity.
+4. If balance ≥ $5:
+   - $5 deducted, card ordered, status set to "ordered".
+5. If balance < $5:
+   - Status set to "verified", user prompted to top up.
+6. User tops up later, completes card ordering.
+
+### **4.2 Spending with Card**
+1. User sets spending limit ($100).
+2. System off-ramps $100 to fiat account.
+3. User spends with card; system monitors fiat balance.
+4. If balance < $20 (20%), user receives low-balance alert.
+
+### **4.3 Sub Card Creation**
+1. Master card user orders sub card with $50 limit.
+2. Sub card is created, shipped to specified address.
+3. Sub card user activates card, spends within $50.
+4. Master card user views sub card transactions.
+
+---
+
+## **5. Dependencies**
+- **External APIs**:
+  - Sudo Africa: Card issuance, fiat account management.
+  - Safe Haven MFB: Identity verification.
+  - Paycrest: Crypto-to-fiat conversion.
+  - Privy: Wallet delegation and user data.
+- **Internal**:
+  - Database for user, wallet, transaction, and card data.
+  - Cache system for balance data.
+
+---
+
+## **6. Success Metrics**
+- 95% of card orders completed within 5 seconds (excluding delivery).
+- 99% uptime for API endpoints.
+- < 1% transaction failure rate due to internal errors.
+- 100% KYC compliance for verified users.
+
+---

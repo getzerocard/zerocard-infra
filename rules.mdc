@@ -1,0 +1,115 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# TypeScript and ESLint Code Style Guide
+
+## Imports
+
+- ✅ **Remove unused imports** - All imports should be actively used in the file
+- ✅ **Use `import type` for type-only imports** - This improves build optimization
+  ```typescript
+  // Good
+  import type { User } from './user.model';
+  
+  // Avoid
+  import { User } from './user.model';
+  ```
+- ✅ **Avoid import type side effects** - Don't rely on side effects from type imports
+- ✅ **Group imports logically** - Related imports should be grouped together
+  ```typescript
+  // External dependencies
+  import { Module } from '@nestjs/common';
+  import { TypeOrmModule } from '@nestjs/typeorm';
+  
+  // Internal modules
+  import { EventModule } from './modules/event/event.module';
+  import { CategoryModule } from './modules/category/category.module';
+  
+  // Local imports
+  import { CloudinaryProvider } from './cloudinary/cloudinary.provider';
+  ```
+
+## Type Definitions
+
+- ✅ **Use interfaces for type definitions** - Prefer interfaces over type aliases for object types
+  ```typescript
+  // Good
+  interface UserData {
+    id: number;
+    name: string;
+  }
+  
+  // Avoid
+  type UserData = {
+    id: number;
+    name: string;
+  };
+  ```
+- ✅ **Use explicit return types** for public API methods
+- ✅ **Use `@ts-expect-error` instead of `@ts-ignore`** - This ensures errors are reviewed when TypeScript is updated
+
+## Variable Naming
+
+- ✅ **Prefix unused variables with underscore** - This signals intent and avoids linting errors
+  ```typescript
+  // Good
+  function process(_unusedParam, importantParam) {
+    return importantParam.value;
+  }
+  
+  // Avoid
+  function process(unusedParam, importantParam) {
+    return importantParam.value;
+  }
+  ```
+
+## NestJS Best Practices
+
+- ✅ **Follow modular architecture** - Keep modules focused and single-responsibility
+- ✅ **Use DTOs for data validation** - Define clear Data Transfer Objects for all inputs
+- ✅ **Leverage decorators** - Use NestJS decorators for declarative code
+- ✅ **Use dependency injection** - Never instantiate services with `new`
+- ✅ **Configure TypeORM properly** - Use appropriate entity configurations
+  ```typescript
+  // Good - Explicit column types
+  @Column({ type: 'varchar', length: 100, nullable: false })
+  name: string;
+  
+  // Avoid - Implicit types
+  @Column()
+  name: string;
+  ```
+- ✅ **Use async/await consistently** - Don't mix Promise chains and async/await
+- ✅ **Implement proper error handling** - Use filters for consistent error responses
+
+## Database Configuration
+
+- ✅ **Use URL-based database connection when available** - Prefer connection strings over separate parameters
+- ✅ **Disable synchronize in production** - Use migrations instead of auto-synchronization
+- ❌ **Never use synchronize in production** - This can lead to data loss
+
+## Error Handling
+
+- ✅ **Use specific error types** - Prefer specific error classes over generic ones
+- ✅ **Include error context** - Add relevant information to error messages
+
+## Code Maintenance Tools
+
+- ✅ **Use automated tools** - We have scripts to help maintain code quality:
+  - `yarn lint:fix-imports` - Automatically removes unused imports
+  - `yarn lint:ts` - Applies TypeScript-specific best practices
+  - `yarn dev` - Combines lint fixes with development server
+  - `yarn debug` - Combines lint fixes with debug server
+
+- ✅ **Run linters before committing** - Keep code clean from the start
+- ✅ **Follow NestJS patterns** - Use standard NestJS module/service/controller structure
+
+## Best Practices
+
+- ✅ **Clean up resources** - Close connections and free resources when they're no longer needed
+- ✅ **Use dependency injection** - Follow NestJS patterns for providing dependencies
+- ✅ **Write tests** - Include unit tests for business logic
+- ✅ **Don't use `any` type** - Be explicit about types whenever possible
+- ✅ **Use URL-based configuration** - For database connections and other external services 
