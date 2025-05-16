@@ -35,8 +35,8 @@ export class MapCardService {
    * The customer ID is derived from user details, with a fallback to the user ID if necessary.
    *
    * @param userId - The ID of the user requesting to map the card. Used for authentication and authorization.
-   * @param status - The initial status of the card (e.g., active, inactive).
-   * @param expirationDate - The expiration date of the card in MMM-YYYY format (e.g., AUG-2025).
+   * @param status - The initial status of the card (e.g., active, inactive). This parameter is accepted for compatibility but is currently ignored; the card status is defaulted to 'active'.
+   * @param expirationDate - The expiration date of the card. This parameter is accepted for compatibility but is currently not used in the card mapping process.
    * @param number - The card number to be mapped.
    * @returns A Promise resolving to an object containing the status code, a success message, and the mapped card data.
    * @throws HttpException - If user validation fails, customer ID retrieval fails, or the card mapping process encounters an error.
@@ -77,7 +77,7 @@ export class MapCardService {
     const cardData = {
       type: 'physical',
       currency: 'NGN',
-      status,
+      status: 'active',
       issuerCountry: 'NGA',
       spendingControls: {
         channels: {
@@ -98,7 +98,7 @@ export class MapCardService {
       sendPINSMS: false,
       customerId,
       brand: 'Verve',
-      expirationDate,
+      expirationDate: undefined,
       metadata: { user_id: userId },
       number,
     };
@@ -112,23 +112,45 @@ export class MapCardService {
       );
       this.logger.log(`Response from mapCard infrastructure handler: ${JSON.stringify(response)}`);
 
-      // Handle specific "Card not found or already linked" error from the provider
-      if (response && response.statusCode === 400 && response.message === "Card not found or already linked.") {
-        if (userEntity.cardId) {
-          // User already has a card in our system.
-          this.logger.warn(`mapCard failed for user ${userId} (user already has cardId ${userEntity.cardId}). Provider error: ${response.message}`);
+      // Refactored error handling for the mapCard provider response
+      if (!response || (typeof response.statusCode === 'number' && response.statusCode >= 300) || !response.data) {
+        const providerMessage = response?.message || 'Card Protocol: Unknown error from card provider during mapping.';
+        const providerStatus = typeof response?.statusCode === 'number' ? response.statusCode : HttpStatus.INTERNAL_SERVER_ERROR;
+
+        this.logger.warn(`mapCard provider error for user ${userId}: ${providerMessage} (Status: ${providerStatus})`);
+
+        // Handle specific known error messages with custom responses/statuses
+        if (providerMessage === "Card not found or already linked.") {
+          if (userEntity.cardId) {
+            throw new HttpException(
+              'Card Protocol: Card already linked to this user profile.',
+              HttpStatus.CONFLICT,
+            );
+          } else {
+            throw new HttpException(
+              'Card Protocol: Card not found or may be linked to another account. Please check the card number.',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+        } else if (providerMessage === "Creation of sub account not allowed for this client.") {
           throw new HttpException(
-            'Card Protocol: Card already linked.',
-            HttpStatus.CONFLICT,
-          );
-        } else {
-          // User does not have a card in our system.
-          this.logger.warn(`mapCard failed for user ${userId} (user has no existing card). Provider error: ${response.message}`);
-          throw new HttpException(
-            'Card Protocol: Card not found check card number and try again ',
-            HttpStatus.BAD_REQUEST,
+            `Card Protocol: Card mapping failed. ${providerMessage}`, // Include provider's message
+            HttpStatus.FORBIDDEN, // Appropriate for permission issues
           );
         }
+
+        // For other errors not specifically handled above, use the provider's message and status
+        throw new HttpException(
+          `Card Protocol: ${providerMessage}`,
+          providerStatus,
+        );
+      }
+
+      // If we reach here, the call was presumptively successful and response.data should exist.
+      // Add a defensive check for response.data._id existence.
+      if (typeof response.data._id === 'undefined') {
+        this.logger.error(`mapCard provider returned success status but no card ID in data: ${JSON.stringify(response)}`);
+        throw new HttpException('Card Protocol: Invalid response from card provider (missing card ID after mapping).', HttpStatus.INTERNAL_SERVER_ERROR);
       }
 
       const cardId = response.data._id;
