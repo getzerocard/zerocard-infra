@@ -12,6 +12,7 @@ import { WithdrawalModule } from './modules/withdrawal/withdrawal.module';
 import { TransactionModule } from './modules/Transaction/transaction.module';
 import { ShipmentModule } from './modules/shipment/shipment.module';
 import { AddressMonitoringModule } from './modules/AddressMonitoring/address-monitoring.module';
+import { PusherModule } from './modules/pusher/pusher.module';
 import { AppController } from './app.controller';
 import { HealthCheckService } from './healthcheck.service';
 import config from './config/env.config';
@@ -56,6 +57,7 @@ import config from './config/env.config';
     TransactionModule,
     ShipmentModule,
     AddressMonitoringModule,
+    PusherModule,
   ],
   controllers: [AppController],
   providers: [HealthCheckService],

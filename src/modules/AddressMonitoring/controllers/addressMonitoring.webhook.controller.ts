@@ -8,6 +8,8 @@ import { EntityManager } from 'typeorm'; // Removed Repository as it's used via 
 import { User } from '../../user/entity/user.entity'; // Added User import
 import { Transaction } from '../../Transaction/entity/transaction.entity'; // Added Transaction import
 import { processDepositSuccessEvent } from '../handler/processDepositSuccess.handler'; // Import the new handler
+import { PusherService } from '../../pusher/pusher.service'; // Added PusherService import
+import { PrivyService } from '../../auth/privy.service'; // Added PrivyService import
 
 
 // --- BlockRadar Webhook Specific DTOs/Interfaces ---
@@ -189,6 +191,8 @@ export class AddressMonitoringWebhookController {
     constructor(
         private readonly configService: ConfigService,
         private readonly entityManager: EntityManager, // Injected EntityManager
+        private readonly pusherService: PusherService, // Injected PusherService
+        private readonly privyService: PrivyService, // Injected PrivyService
     ) {
         this.blockradarApiKey = this.configService.get<string>('WALLET_API_KEY');
         if (!this.blockradarApiKey) {
@@ -271,6 +275,42 @@ export class AddressMonitoringWebhookController {
             if (eventData.status === "SUCCESS") {
                 // Call the new handler function
                 await processDepositSuccessEvent(eventData, this.entityManager);
+
+                // --- Begin Pusher Event Trigger ---
+                const userIdForPusher = eventData.address?.name; // This is the Privy User ID
+                if (userIdForPusher) {
+                    try {
+                        const wallets = await this.privyService.getWalletId(userIdForPusher, 'ethereum');
+                        if (wallets && wallets.length > 0 && wallets[0].address) {
+                            const walletAddress = wallets[0].address;
+                            const pusherChannel = `private-${walletAddress}`;
+                            const pusherEvent = 'deposit-update';
+                            const pusherPayload = {
+                                tokenSymbol: eventData.asset.symbol,
+                                type: eventData.type,
+                                blockchainNetwork: eventData.blockchain.slug,
+                                chainType: eventData.blockchain.isEvmCompatible ? "ethereum" : "solana",
+                                status: eventData.status,
+                                hash: eventData.hash,
+                                senderAddress: eventData.senderAddress,
+                                recipientAddress: eventData.recipientAddress, // Added recipient address for completeness
+                                amount: eventData.amount, // Added amount for completeness
+                            };
+
+                            this.logger.log(`Attempting to send Pusher event to channel ${pusherChannel} for event ${pusherEvent}`);
+                            await this.pusherService.trigger(pusherChannel, pusherEvent, pusherPayload);
+                            this.logger.log(`Pusher event sent successfully to channel ${pusherChannel}.`);
+                        } else {
+                            this.logger.warn(`Could not send Pusher event for deposit.success: No Ethereum wallet address found in Privy for user ${userIdForPusher}.`);
+                        }
+                    } catch (privyOrPusherError: any) {
+                        // Log errors from PrivyService or PusherService but don't let them break the webhook response
+                        this.logger.error(`Error during Privy wallet fetch or Pusher event trigger for deposit.success: ${privyOrPusherError.message}`, privyOrPusherError.stack);
+                    }
+                } else {
+                    this.logger.warn('Could not send Pusher event for deposit.success: User ID (address.name) not available in eventData.');
+                }
+                // --- End Pusher Event Trigger ---
 
                 // If handler is successful, send OK response
                 return res.status(HttpStatus.OK).send('Webhook processed and transaction created (deposit.success).');

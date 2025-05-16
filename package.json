@@ -67,6 +67,7 @@
     "permissionless": "^0.2.42",
     "pg": "^8.13.1",
     "posthog-node": "^4.13.0",
+    "pusher": "^5.2.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
     "swagger-ui-express": "^5.0.1",
