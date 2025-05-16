@@ -98,7 +98,6 @@ export class MapCardService {
       sendPINSMS: false,
       customerId,
       brand: 'Verve',
-      expirationDate: undefined,
       metadata: { user_id: userId },
       number,
     };
