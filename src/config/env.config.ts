@@ -85,6 +85,13 @@ const config = {
     expirationMs: parseInt(process.env.OTP_EXPIRATION_MS, 10) || 300000,
     expirationMinutes: parseInt(process.env.OTP_EXPIRATION_MINUTES, 10) || 5,
   },
+  pusher: {
+    appId: process.env.PUSHER_APP_ID,
+    key: process.env.PUSHER_KEY,
+    secret: process.env.PUSHER_SECRET,
+    cluster: process.env.PUSHER_CLUSTER,
+    useTLS: process.env.PUSHER_USE_TLS === 'true', // Ensure boolean conversion
+  },
 };
 
 export default config;
