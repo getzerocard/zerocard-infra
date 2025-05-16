@@ -136,7 +136,7 @@ export class UserController {
    * @returns Updated user profile
    */
   @Patch(':userId')
-  @ApiOperation({ summary: 'Update user information', description: 'Update user details such as username, timezone, and shipping address, with optional blockchain type for wallet linking.' })
+  @ApiOperation({ summary: 'Update user information', description: 'Update user details such as username, timezone, and shipping address.' })
   @ApiParam({
     name: 'userId',
     description: 'User ID or "me" for current authenticated user',
@@ -152,8 +152,8 @@ export class UserController {
     @Body(new ValidationPipe()) updateData: UpdateUserDto,
     @PrivyUser() userData: PrivyUserData,
   ): Promise<UserResponseDto> {
-    this.logger.log(`Updating user with ID ${userId}`);
-    return this.userService.update(userData.userId, userId, updateData);
+    this.logger.log(`Updating user with ID ${userId === 'me' ? userData.userId : userId}`);
+    return this.userService.update(userData.userId, updateData);
   }
 
   /**

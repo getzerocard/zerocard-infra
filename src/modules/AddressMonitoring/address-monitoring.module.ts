@@ -1,25 +1,16 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-// import { TypeOrmModule } from '@nestjs/typeorm'; // Uncomment if you use TypeORM entities
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { AddressMonitoringWebhookController } from './controllers/addressMonitoring.webhook.controller';
-import { AddressMonitoringService } from './address-monitoring.service';
-import { AuthModule } from 'src/modules/auth/auth.module'; // Adjusted path
+import { User } from '../user/entity/user.entity';
+import { Transaction } from '../Transaction/entity/transaction.entity';
 
 @Module({
     imports: [
-        ConfigModule,
-        AuthModule, // Import AuthModule to make PrivyService available for injection
-        // TypeOrmModule.forFeature([/* Related Entities */]),
+        ConfigModule, // For ConfigService used in the controller
+        TypeOrmModule.forFeature([User, Transaction]), // For EntityManager to be aware of these entities
     ],
-    controllers: [
-        AddressMonitoringWebhookController,
-        // If you create other controllers, add them here
-    ],
-    providers: [
-        AddressMonitoringService,
-    ],
-    exports: [
-        AddressMonitoringService, // Export if needed by other modules
-    ],
+    controllers: [AddressMonitoringWebhookController],
+    providers: [], // No new providers in this module itself for now
 })
 export class AddressMonitoringModule { }

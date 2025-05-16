@@ -47,15 +47,6 @@ export class UpdateUserDto {
     country?: string;
     postalCode?: string;
   };
-
-  @IsOptional()
-  @IsEnum(['ethereum', 'solana'])
-  @ApiPropertyOptional({
-    description: 'Blockchain type for wallet linking',
-    enum: ['ethereum', 'solana'],
-    example: 'ethereum',
-  })
-  chainType?: 'ethereum' | 'solana';
 }
 
 // Remove UpdateUserSuccessResponse class

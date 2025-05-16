@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
   UnauthorizedException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -23,7 +24,6 @@ import { getTokenBalance } from '../../common/util/getTokenBalance';
 import { formatMoney, toMoney } from '../../common/util/money';
 import { ConfigService } from '@nestjs/config';
 import { PrivyService } from '../auth/privy.service';
-import { AddressMonitoringService } from '../AddressMonitoring/address-monitoring.service';
 import {
   FundsLock,
   LockStatus,
@@ -40,6 +40,7 @@ import { plainToClass, plainToInstance } from 'class-transformer';
 import { UserResponseDto } from './dto/get-user.dto';
 import { SubUserDetailDto } from './dto/get-sub-users.dto';
 import { ConstraintResponseDto } from './dto/set-constraint.dto';
+import { whitelistAddress } from './handler/whitelistadress';
 
 type SubUserFormatted = User & { subuserstatus: string };
 
@@ -60,14 +61,12 @@ export class UserService {
     private readonly emailHandlerService: EmailHandlerService,
     private readonly configService: ConfigService,
     private readonly privyService: PrivyService,
-    private readonly addressMonitoringService: AddressMonitoringService,
   ) { }
 
   /**
    * Update user information by userId with authorization checks
    *
    * @param authUserId - The ID of the authenticated user making the request
-   * @param targetUserId - The userId of the user to update
    * @param updateData - The data to update
    * @returns The updated user entity
    * @throws UnauthorizedException if the update is not allowed
@@ -77,51 +76,44 @@ export class UserService {
    */
   async update(
     authUserId: string,
-    targetUserId: string,
     updateData: UpdateUserDto,
   ): Promise<UserResponseDto> {
     this.logger.debug(
-      `Updating user with ID ${targetUserId} by auth user ${authUserId}`,
+      `Updating user with ID ${authUserId} by auth user ${authUserId}`,
     );
 
     // Priority 1: Consolidated initial validation checks (quickest checks)
     // Throw exception immediately if any check fails
-    if (!authUserId || !targetUserId) {
-      this.logger.error(`Invalid input: authUserId or targetUserId is missing`);
+    if (!authUserId) {
+      this.logger.error(`Invalid input: authUserId is missing`);
       throw new BadRequestException('Invalid user ID provided');
     }
 
+    // Fetch the user to be updated using authUserId for initial checks
+    const userForInitialCheck = await findUserById(this.userRepository, authUserId);
+    if (!userForInitialCheck) {
+      this.logger.error(`User with ID ${authUserId} not found`);
+      throw new NotFoundException('User not found');
+    }
+
     if (Object.keys(updateData).length === 0) {
-      this.logger.debug(`No updates provided for user ${targetUserId}`);
-      const targetUser = await findUserById(this.userRepository, targetUserId);
-      if (!targetUser) {
-        this.logger.error(`Target user with ID ${targetUserId} not found`);
-        throw new NotFoundException('Target user not found');
-      }
-      return plainToClass(UserResponseDto, targetUser, {
+      this.logger.debug(`No updates provided for user ${authUserId}`);
+      return plainToClass(UserResponseDto, userForInitialCheck, {
         excludeExtraneousValues: true,
         enableImplicitConversion: true,
       });
     }
 
     // Check if provided updates are the same as existing data
-    const initialTargetUser = await findUserById(
-      this.userRepository,
-      targetUserId,
-    );
-    if (!initialTargetUser) {
-      this.logger.error(`Target user with ID ${targetUserId} not found`);
-      throw new NotFoundException('Target user not found');
-    }
     const areUpdatesUnchanged = this.areUpdatesUnchanged(
       updateData,
-      initialTargetUser,
+      userForInitialCheck,
     );
     if (areUpdatesUnchanged) {
       this.logger.debug(
-        `Provided updates are unchanged for user ${targetUserId}`,
+        `Provided updates are unchanged for user ${authUserId}`,
       );
-      return plainToClass(UserResponseDto, initialTargetUser, {
+      return plainToClass(UserResponseDto, userForInitialCheck, {
         excludeExtraneousValues: true,
         enableImplicitConversion: true,
       });
@@ -137,54 +129,24 @@ export class UserService {
       }
     }
 
-    // Priority 2: Fetch authenticated user and target user concurrently
-    const [authUser, targetUser] = await Promise.all([
-      findUserById(this.userRepository, authUserId),
-      findUserById(this.userRepository, targetUserId),
-    ]);
-
-    if (!authUser) {
-      this.logger.error(`Authenticated user with ID ${authUserId} not found`);
-      throw new NotFoundException('Authenticated user not found');
-    }
-
-    if (!targetUser) {
-      this.logger.error(`Target user with ID ${targetUserId} not found`);
-      throw new NotFoundException('Target user not found');
-    }
-
-    // Priority 3: Authorization check
-    if (targetUser.userId !== authUser.userId) {
-      this.logger.warn(
-        `User ${authUserId} not authorized to update user ${targetUserId}`,
-      );
-      throw new UnauthorizedException('Not authorized to update this user');
-    }
-
-    // Priority 4: Handle edge cases with transaction for concurrency control
+    // Priority 2: Handle edge cases with transaction for concurrency control
     return await this.userRepository.manager.transaction(
       async (transactionalEntityManager) => {
-        // Re-fetch target user within transaction to ensure latest data and lock
-        const lockedTargetUser = await transactionalEntityManager.findOne(
+        this.logger.log('[UserService - Transaction Block] Entered transaction for user update.');
+
+        // Re-fetch target user (which is authUser) within transaction to ensure latest data and lock
+        const lockedUser = await transactionalEntityManager.findOne(
           User,
           {
-            where: { userId: targetUserId },
+            where: { userId: authUserId },
             lock: { mode: 'pessimistic_write' },
           },
         );
-        if (!lockedTargetUser) {
+        if (!lockedUser) {
           this.logger.error(
-            `Target user with ID ${targetUserId} no longer exists`,
+            `User with ID ${authUserId} no longer exists`,
           );
-          throw new NotFoundException('Target user no longer exists');
-        }
-
-        // Re-validate authorization within transaction
-        if (lockedTargetUser.userId !== authUser.userId) {
-          this.logger.warn(
-            `User ${authUserId} no longer authorized to update user ${targetUserId}`,
-          );
-          throw new UnauthorizedException('Not authorized to update this user');
+          throw new NotFoundException('User no longer exists');
         }
 
         // Restrict updates to only allowed fields
@@ -192,19 +154,49 @@ export class UserService {
 
         // Validate and apply username update
         if (updateData.username) {
-          // Check for username uniqueness
-          const existingUserWithUsername =
-            await transactionalEntityManager.findOne(User, {
-              where: { username: updateData.username },
-            });
-          if (
-            existingUserWithUsername &&
-            existingUserWithUsername.userId !== targetUserId
-          ) {
-            this.logger.warn(`Username ${updateData.username} already taken`);
-            throw new ConflictException('Username already exists');
+          try {
+            const [existingUserWithUsernameResult, whitelistResult] = await Promise.all([
+              transactionalEntityManager.findOne(User, { // Promise for username check
+                where: { username: updateData.username },
+              }),
+              whitelistAddress( // Promise for whitelisting
+                this.configService,
+                this.privyService,
+                authUserId
+              )
+            ]);
+
+            // Check username uniqueness result
+            if (
+              existingUserWithUsernameResult &&
+              existingUserWithUsernameResult.userId !== authUserId
+            ) {
+              this.logger.warn(`Username ${updateData.username} already taken`);
+              throw new ConflictException('Username already exists');
+            }
+
+            // Check whitelisting result
+            if (!whitelistResult.success) {
+              const errorMessage = `Failed to whitelist address for user ${authUserId}: ${whitelistResult.message || 'Unknown whitelisting error'}`;
+              this.logger.error(errorMessage);
+              throw new BadRequestException(errorMessage);
+            }
+
+            // If both operations were successful:
+            allowedUpdates.username = updateData.username;
+            lockedUser.isWhitelisted = true;
+            this.logger.log(`Successfully validated username and whitelisted address concurrently for user ${authUserId}`);
+
+          } catch (error: any) {
+            const anErrorMessage = `Error during concurrent username validation/whitelisting for user ${authUserId}: ${error.message || 'Operation failed'}`;
+            this.logger.error(anErrorMessage, error.stack);
+
+            if (error instanceof ConflictException || error instanceof BadRequestException) {
+              throw error; // Re-throw known, specific exceptions
+            }
+            // For other errors (e.g., unexpected failure in DB query or within whitelistAddress not caught as success:false)
+            throw new InternalServerErrorException(anErrorMessage);
           }
-          allowedUpdates.username = updateData.username;
         }
 
         // Validate and apply timezone update (already validated above)
@@ -216,7 +208,7 @@ export class UserService {
         if (updateData.shippingAddress) {
           // Merge with existing address to avoid overwriting with undefined
           const currentAddress =
-            (lockedTargetUser.shippingAddress as {
+            (lockedUser.shippingAddress as {
               street?: string;
               city?: string;
               state?: string;
@@ -249,40 +241,22 @@ export class UserService {
 
         // If no updates provided, return the current user without saving
         if (Object.keys(allowedUpdates).length === 0) {
-          this.logger.debug(`No updates provided for user ${targetUserId}`);
-          return plainToClass(UserResponseDto, lockedTargetUser, {
+          this.logger.debug(`No updates provided for user ${authUserId}`);
+          return plainToClass(UserResponseDto, lockedUser, {
             excludeExtraneousValues: true,
             enableImplicitConversion: true,
           });
         }
 
-        // Apply updates and save
-        const updatedUser = { ...lockedTargetUser, ...allowedUpdates };
+        // Apply allowed updates to the lockedUser
+        Object.assign(lockedUser, allowedUpdates);
+
         try {
           const updatedUserEntity = await transactionalEntityManager.save(
             User,
-            updatedUser,
+            lockedUser,
           );
-          this.logger.log(`Updated user with ID ${targetUserId}`);
-
-          // Call AddressMonitoringService to whitelist wallet address if chainType is provided and username is updated
-          if (updateData.chainType && updateData.username) {
-            try {
-              await this.addressMonitoringService.whitelistUserAddress(
-                targetUserId,
-                updateData.chainType,
-              );
-              this.logger.log(`Whitelisted wallet address for user ${targetUserId} on ${updateData.chainType}`);
-              // Update the user's addressWhitelisted status
-              await this.userRepository.update(
-                { id: targetUser.id },
-                { addressWhitelisted: true },
-              );
-            } catch (error) {
-              this.logger.error(`Failed to whitelist wallet address for user ${targetUserId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-              // Do not throw error to avoid blocking user update
-            }
-          }
+          this.logger.log(`Updated user with ID ${authUserId}`);
 
           return plainToClass(UserResponseDto, updatedUserEntity, {
             excludeExtraneousValues: true,
@@ -290,7 +264,7 @@ export class UserService {
           });
         } catch (error) {
           this.logger.error(
-            `Database error while updating user ${targetUserId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            `Database error while updating user ${authUserId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
           );
           throw new BadRequestException(
             'Failed to update user due to a database error',

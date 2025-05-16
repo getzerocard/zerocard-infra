@@ -248,5 +248,5 @@ export class User {
   base64Photo: string;
 
   @Column({ type: 'boolean', default: false })
-  addressWhitelisted: boolean;
+  isWhitelisted: boolean;
 }
