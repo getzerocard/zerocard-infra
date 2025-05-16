@@ -81,7 +81,7 @@ export async function mapCard(
     sendPINSMS: boolean;
     customerId: string;
     brand: string;
-    expirationDate: string;
+    expirationDate?: string;
     metadata: {
       user_id: string;
     };
